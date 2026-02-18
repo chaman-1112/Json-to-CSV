@@ -286,7 +286,7 @@ dropZone.addEventListener('drop', e => {
 });
 fileInput.addEventListener('change', () => { if (fileInput.files.length) fileNameEl.textContent = fileInput.files[0].name; });
 
-// --- URL convert ---
+// --- URL convert (streams large responses via chunked reading) ---
 document.getElementById('btn-url').addEventListener('click', async () => {
   const btn = document.getElementById('btn-url');
   const url = document.getElementById('url').value.trim();
@@ -305,10 +305,27 @@ document.getElementById('btn-url').addEventListener('click', async () => {
       const err = await resp.json().catch(() => null);
       throw new Error((err && err.error) || 'HTTP error ' + resp.status);
     }
-    const text = await resp.text();
+    showMsg('Downloading JSON from server… (large files may take a minute)', 'success');
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    const chunks = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      const mb = (received / (1024 * 1024)).toFixed(1);
+      showMsg(`Downloading… ${mb} MB received`, 'success');
+    }
+    showMsg('Parsing JSON…', 'success');
+    const fullText = chunks.map(c => decoder.decode(c, { stream: true })).join('') + decoder.decode();
+    chunks.length = 0; // free memory
     let data;
-    try { data = JSON.parse(text); } catch { throw new Error('The response is not valid JSON.'); }
+    try { data = JSON.parse(fullText); } catch { throw new Error('The response is not valid JSON.'); }
+    showMsg('Converting to CSV…', 'success');
     const csv = jsonToCsv(data);
+    data = null; // free memory
     downloadCsv(csv, csvNameFromUrl(url));
     showMsg('Done! CSV downloaded.', 'success');
   } catch (e) {

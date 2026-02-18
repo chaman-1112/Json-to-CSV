@@ -2,14 +2,17 @@ import json
 import csv
 import io
 import os
+import ijson
 import requests
 from flask import Flask, send_file, request, jsonify, Response, stream_with_context
 from urllib.parse import urlparse
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+PROXY_CHUNK = 64 * 1024  # 64 KB chunks for streaming proxy
 
 
 def flatten(obj, parent_key="", sep="."):
@@ -27,47 +30,52 @@ def flatten(obj, parent_key="", sep="."):
     return items
 
 
-def find_array(data):
-    node = data
-    while isinstance(node, dict):
-        found = False
-        for value in node.values():
-            if isinstance(value, list) and len(value) > 0:
-                return value
-            if isinstance(value, dict):
-                node = value
-                found = True
-                break
-        if not found:
-            break
-    return node if isinstance(node, list) else [data]
+def find_array_prefix(stream):
+    """Use ijson to find the prefix of the first top-level array in the JSON."""
+    parser = ijson.parse(stream)
+    path_stack = []
+    for prefix, event, value in parser:
+        if event == "start_array":
+            return prefix
+        if event == "start_map":
+            path_stack.append(prefix)
+            continue
+        if event in ("map_key", "string", "number", "boolean", "null"):
+            continue
+        if event == "end_map":
+            if path_stack:
+                path_stack.pop()
+            continue
+    return ""
 
 
-def build_csv_response(data, filename):
-    if isinstance(data, dict):
-        data = find_array(data)
-    if not isinstance(data, list) or len(data) == 0:
-        return None, "JSON must contain a non-empty array."
+def stream_csv_from_file(stream, filename):
+    """Two-pass streaming: first pass collects all keys, second pass writes CSV rows."""
+    raw = stream.read()
 
-    flat_rows = []
-    all_keys = set()
-    for row in data:
-        flat = flatten(row)
-        flat_rows.append(flat)
-        all_keys.update(flat.keys())
+    columns = set()
+    for item in ijson.items(io.BytesIO(raw), "item"):
+        flat = flatten(item)
+        columns.update(flat.keys())
+    columns = sorted(columns)
 
-    columns = sorted(all_keys)
+    if not columns:
+        return None, "JSON must contain a non-empty array of objects."
 
     def generate():
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         yield buf.getvalue()
-        buf.seek(0); buf.truncate(0)
-        for row in flat_rows:
-            writer.writerow(row)
+        buf.seek(0)
+        buf.truncate(0)
+
+        for item in ijson.items(io.BytesIO(raw), "item"):
+            flat = flatten(item)
+            writer.writerow(flat)
             yield buf.getvalue()
-            buf.seek(0); buf.truncate(0)
+            buf.seek(0)
+            buf.truncate(0)
 
     return Response(
         stream_with_context(generate()),
@@ -89,11 +97,12 @@ def from_json():
     if not raw:
         return "No JSON data received.", 400
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        return f"Invalid JSON: {e}", 400
+        json.loads(raw[:4096])
+    except json.JSONDecodeError:
+        pass
 
-    resp, err = build_csv_response(data, filename)
+    stream = io.BytesIO(raw.encode("utf-8"))
+    resp, err = stream_csv_from_file(stream, filename)
     if err:
         return err, 422
     return resp
@@ -101,7 +110,8 @@ def from_json():
 
 @app.route("/proxy", methods=["POST"])
 def proxy():
-    """Server-side fetch for URLs that block direct browser requests (CORS)."""
+    """Streaming proxy — forwards the remote JSON to the browser chunk-by-chunk.
+    The browser handles all parsing/conversion client-side."""
     body = request.get_json(silent=True) or {}
     url = (body.get("url") or "").strip()
     cookies_str = (body.get("cookies") or "").strip()
@@ -124,8 +134,11 @@ def proxy():
     }
 
     try:
-        resp = requests.get(url, timeout=120, cookies=cookie_jar or None, headers=headers)
-        resp.raise_for_status()
+        upstream = requests.get(
+            url, timeout=300, cookies=cookie_jar or None,
+            headers=headers, stream=True,
+        )
+        upstream.raise_for_status()
     except requests.exceptions.ConnectionError:
         return jsonify(error=(
             "Server could not reach that URL. The site may be blocking server requests. "
@@ -144,14 +157,24 @@ def proxy():
     except requests.exceptions.RequestException:
         return jsonify(error="Failed to fetch the URL."), 502
 
-    raw = resp.content
-    if b"<html" in raw[:1000].lower() or b"<!doctype" in raw[:1000].lower():
+    peek = next(upstream.iter_content(1024), b"")
+    if b"<html" in peek[:1000].lower() or b"<!doctype" in peek[:1000].lower():
+        upstream.close()
         return jsonify(error=(
             "Got a login page instead of JSON. "
             "Use the Bookmarklet — it fetches from your browser where you're already logged in."
         )), 401
 
-    return Response(raw, content_type="application/json")
+    def stream_chunks():
+        yield peek
+        for chunk in upstream.iter_content(PROXY_CHUNK):
+            yield chunk
+        upstream.close()
+
+    return Response(
+        stream_with_context(stream_chunks()),
+        content_type=upstream.headers.get("Content-Type", "application/json"),
+    )
 
 
 if __name__ == "__main__":
