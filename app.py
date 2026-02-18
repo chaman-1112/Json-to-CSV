@@ -1,128 +1,12 @@
 import json
 import csv
 import io
-import time
-import hashlib
 import requests
+from flask import Flask, send_file, request, jsonify, Response, stream_with_context
 from urllib.parse import urlparse
-from flask import Flask, request, render_template_string, Response, stream_with_context
 
 app = Flask(__name__)
-
-HTML = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>JSON to CSV Converter</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    background: #0f0f1a;
-    color: #e0e0e0;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .card {
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
-    border-radius: 16px;
-    padding: 48px 40px;
-    width: 100%;
-    max-width: 560px;
-    box-shadow: 0 20px 60px rgba(0,0,0,.4);
-  }
-  h1 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    margin-bottom: 8px;
-    background: linear-gradient(135deg, #60a5fa, #a78bfa);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-  .subtitle { color: #888; font-size: .9rem; margin-bottom: 32px; }
-  label { display: block; font-weight: 600; margin-bottom: 8px; font-size: .95rem; }
-  input[type="text"] {
-    width: 100%;
-    padding: 14px 16px;
-    border: 1px solid #2a2a4a;
-    border-radius: 10px;
-    background: #12121f;
-    color: #e0e0e0;
-    font-size: 1rem;
-    outline: none;
-    transition: border-color .2s;
-  }
-  input[type="text"]:focus { border-color: #60a5fa; }
-  input[type="text"]::placeholder { color: #555; }
-  button {
-    margin-top: 20px;
-    width: 100%;
-    padding: 14px;
-    border: none;
-    border-radius: 10px;
-    background: linear-gradient(135deg, #3b82f6, #7c3aed);
-    color: #fff;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: opacity .2s;
-  }
-  button:hover { opacity: .9; }
-  button:disabled { opacity: .5; cursor: wait; }
-  .error {
-    margin-top: 16px;
-    padding: 12px 16px;
-    background: #2d1b1b;
-    border: 1px solid #5c2a2a;
-    border-radius: 10px;
-    color: #f87171;
-    font-size: .9rem;
-  }
-  .spinner {
-    display: inline-block;
-    width: 16px; height: 16px;
-    border: 2px solid #fff4;
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin .6s linear infinite;
-    vertical-align: middle;
-    margin-right: 8px;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  footer { margin-top: 32px; text-align: center; color: #555; font-size: .8rem; }
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>JSON &rarr; CSV</h1>
-  <p class="subtitle">Paste a JSON URL and download the flattened CSV instantly.</p>
-  <form id="form" action="/convert" method="POST">
-    <label for="url">JSON URL</label>
-    <input type="text" id="url" name="url" placeholder="https://api.example.com/data.json" required autocomplete="off">
-    <button type="submit" id="btn">Convert &amp; Download</button>
-  </form>
-  {% if error %}
-  <div class="error">{{ error }}</div>
-  {% endif %}
-  <footer>Flattens nested JSON arrays into clean CSV files.</footer>
-</div>
-<script>
-  const form = document.getElementById('form');
-  const btn = document.getElementById('btn');
-  form.addEventListener('submit', () => {
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Converting…';
-    setTimeout(() => { btn.disabled = false; btn.textContent = 'Convert & Download'; }, 30000);
-  });
-</script>
-</body>
-</html>
-"""
+app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
 
 def flatten(obj, parent_key="", sep="."):
@@ -141,7 +25,6 @@ def flatten(obj, parent_key="", sep="."):
 
 
 def find_array(data):
-    """Dig into nested dicts to find the first large list."""
     node = data
     while isinstance(node, dict):
         found = False
@@ -157,41 +40,11 @@ def find_array(data):
     return node if isinstance(node, list) else [data]
 
 
-def csv_name_from_url(url):
-    parsed = urlparse(url)
-    import os
-    name = os.path.basename(parsed.path)
-    if name:
-        name = os.path.splitext(name)[0]
-    if not name:
-        name = parsed.netloc.replace(".", "_")
-    return name + ".csv"
-
-
-@app.route("/")
-def index():
-    return render_template_string(HTML)
-
-
-@app.route("/convert", methods=["POST"])
-def convert():
-    url = (request.form.get("url") or "").strip()
-    if not url or not (url.startswith("http://") or url.startswith("https://")):
-        return render_template_string(HTML, error="Please enter a valid URL starting with http:// or https://")
-
-    try:
-        resp = requests.get(url, timeout=120, stream=True)
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.exceptions.RequestException as e:
-        return render_template_string(HTML, error=f"Could not fetch URL: {e}")
-    except json.JSONDecodeError:
-        return render_template_string(HTML, error="The URL did not return valid JSON.")
-
+def build_csv_response(data, filename):
     if isinstance(data, dict):
         data = find_array(data)
-    if not isinstance(data, list):
-        return render_template_string(HTML, error="JSON must be an array or contain one.")
+    if not isinstance(data, list) or len(data) == 0:
+        return None, "JSON must contain a non-empty array."
 
     flat_rows = []
     all_keys = set()
@@ -201,27 +54,101 @@ def convert():
         all_keys.update(flat.keys())
 
     columns = sorted(all_keys)
-    filename = csv_name_from_url(url)
 
     def generate():
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         yield buf.getvalue()
-        buf.seek(0)
-        buf.truncate(0)
-
+        buf.seek(0); buf.truncate(0)
         for row in flat_rows:
             writer.writerow(row)
             yield buf.getvalue()
-            buf.seek(0)
-            buf.truncate(0)
+            buf.seek(0); buf.truncate(0)
 
     return Response(
         stream_with_context(generate()),
         mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    ), None
+
+
+@app.route("/")
+def index():
+    return send_file("index.html")
+
+
+@app.route("/from-json", methods=["POST"])
+def from_json():
+    """Called by the bookmarklet — receives raw JSON text, returns CSV download."""
+    raw = (request.form.get("json_text") or "").strip()
+    filename = (request.form.get("filename") or "converted").strip() + ".csv"
+    if not raw:
+        return "No JSON data received.", 400
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        return f"Invalid JSON: {e}", 400
+
+    resp, err = build_csv_response(data, filename)
+    if err:
+        return err, 422
+    return resp
+
+
+@app.route("/proxy", methods=["POST"])
+def proxy():
+    """Server-side fetch for URLs that block direct browser requests (CORS)."""
+    body = request.get_json(silent=True) or {}
+    url = (body.get("url") or "").strip()
+    cookies_str = (body.get("cookies") or "").strip()
+
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return jsonify(error="Invalid URL."), 400
+
+    cookie_jar = {}
+    if cookies_str:
+        for pair in cookies_str.split(";"):
+            pair = pair.strip()
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                cookie_jar[k.strip()] = v.strip()
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    }
+
+    try:
+        resp = requests.get(url, timeout=120, cookies=cookie_jar or None, headers=headers)
+        resp.raise_for_status()
+    except requests.exceptions.ConnectionError:
+        return jsonify(error=(
+            "Server could not reach that URL. The site may be blocking server requests. "
+            "Use the Bookmarklet instead — it fetches directly from your browser."
+        )), 502
+    except requests.exceptions.Timeout:
+        return jsonify(error="Request timed out."), 504
+    except requests.exceptions.HTTPError as e:
+        code = e.response.status_code if e.response is not None else 0
+        if code in (401, 403):
+            return jsonify(error=(
+                f"Access denied (HTTP {code}). "
+                "Use the Bookmarklet instead — it runs in your browser where you're already logged in."
+            )), 403
+        return jsonify(error=f"HTTP error {code}."), 502
+    except requests.exceptions.RequestException:
+        return jsonify(error="Failed to fetch the URL."), 502
+
+    raw = resp.content
+    if b"<html" in raw[:1000].lower() or b"<!doctype" in raw[:1000].lower():
+        return jsonify(error=(
+            "Got a login page instead of JSON. "
+            "Use the Bookmarklet — it fetches from your browser where you're already logged in."
+        )), 401
+
+    return Response(raw, content_type="application/json")
 
 
 if __name__ == "__main__":

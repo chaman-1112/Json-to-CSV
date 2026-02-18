@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JSON to CSV Converter</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #0f0f1a;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 16px;
+    padding: 48px 40px;
+    width: 100%;
+    max-width: 580px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.4);
+  }
+  h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: #888; font-size: .9rem; margin-bottom: 28px; }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 24px; }
+  .tab {
+    flex: 1;
+    padding: 10px 0;
+    text-align: center;
+    font-size: .9rem;
+    font-weight: 600;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    background: transparent;
+    color: #888;
+    cursor: pointer;
+    transition: all .2s;
+  }
+  .tab:hover { color: #bbb; border-color: #3a3a5a; }
+  .tab.active { background: #2a2a4a; color: #e0e0e0; border-color: #4a4a6a; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  label { display: block; font-weight: 600; margin-bottom: 8px; font-size: .95rem; }
+  input[type="text"] {
+    width: 100%;
+    padding: 14px 16px;
+    border: 1px solid #2a2a4a;
+    border-radius: 10px;
+    background: #12121f;
+    color: #e0e0e0;
+    font-size: 1rem;
+    outline: none;
+    transition: border-color .2s;
+    font-family: inherit;
+  }
+  input[type="text"]:focus { border-color: #60a5fa; }
+  input[type="text"]::placeholder { color: #555; }
+
+  textarea {
+    width: 100%;
+    padding: 14px 16px;
+    border: 1px solid #2a2a4a;
+    border-radius: 10px;
+    background: #12121f;
+    color: #e0e0e0;
+    font-size: .9rem;
+    font-family: 'Consolas', 'Monaco', monospace;
+    outline: none;
+    transition: border-color .2s;
+    resize: vertical;
+    min-height: 160px;
+  }
+  textarea:focus { border-color: #60a5fa; }
+  textarea::placeholder { color: #555; }
+
+  .file-drop {
+    border: 2px dashed #2a2a4a;
+    border-radius: 10px;
+    padding: 40px 16px;
+    text-align: center;
+    color: #666;
+    cursor: pointer;
+    transition: all .2s;
+    font-size: .95rem;
+  }
+  .file-drop:hover, .file-drop.dragover { border-color: #60a5fa; color: #aaa; }
+  .file-drop input { display: none; }
+  .file-name { margin-top: 10px; color: #60a5fa; font-size: .85rem; font-weight: 600; }
+
+  .btn {
+    margin-top: 20px;
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #3b82f6, #7c3aed);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity .2s;
+  }
+  .btn:hover { opacity: .9; }
+  .btn:disabled { opacity: .5; cursor: wait; }
+
+  .msg {
+    margin-top: 16px;
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: .9rem;
+    display: none;
+  }
+  .msg.error   { display: block; background: #2d1b1b; border: 1px solid #5c2a2a; color: #f87171; }
+  .msg.success { display: block; background: #1b2d1b; border: 1px solid #2a5c2a; color: #4ade80; }
+
+  .spinner {
+    display: inline-block;
+    width: 16px; height: 16px;
+    border: 2px solid #fff4;
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin .6s linear infinite;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  footer { margin-top: 28px; text-align: center; color: #555; font-size: .8rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>JSON &rarr; CSV</h1>
+  <p class="subtitle">Convert any JSON to a flattened CSV — instantly.</p>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="url">Fetch from URL</div>
+    <div class="tab" data-tab="file">Upload JSON File</div>
+    <div class="tab" data-tab="paste">Paste JSON</div>
+  </div>
+
+  <!-- URL tab -->
+  <div id="panel-url" class="panel active">
+    <label for="url">JSON URL</label>
+    <input type="text" id="url" placeholder="https://api.example.com/data.json" autocomplete="off">
+    <button class="btn" id="btn-url">Convert &amp; Download</button>
+  </div>
+
+  <!-- File upload tab -->
+  <div id="panel-file" class="panel">
+    <label>JSON File</label>
+    <div class="file-drop" id="drop-zone">
+      <div>Drop a .json file here or click to browse</div>
+      <input type="file" id="file-input" accept=".json,application/json">
+      <div class="file-name" id="file-name"></div>
+    </div>
+    <button class="btn" id="btn-file">Convert &amp; Download</button>
+  </div>
+
+  <!-- Paste JSON tab -->
+  <div id="panel-paste" class="panel">
+    <label for="json-text">Paste JSON</label>
+    <textarea id="json-text" placeholder='[{"name": "Alice", "age": 30}, ...]'></textarea>
+    <div id="paste-size-warn" class="msg"></div>
+    <button class="btn" id="btn-paste">Convert &amp; Download</button>
+  </div>
+
+  <div class="msg" id="msg"></div>
+
+  <footer>Flattens nested JSON arrays into clean CSV files.</footer>
+</div>
+
+<script>
+// --- Flatten ---
+function flatten(obj, parentKey, sep, out) {
+  sep = sep || '.'; out = out || {};
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++)
+      flatten(obj[i], parentKey + '[' + i + ']', sep, out);
+  } else if (obj !== null && typeof obj === 'object') {
+    for (const k of Object.keys(obj))
+      flatten(obj[k], parentKey ? parentKey + sep + k : k, sep, out);
+  } else {
+    out[parentKey] = obj;
+  }
+  return out;
+}
+
+// --- Find first array inside nested dicts ---
+function findArray(data) {
+  let node = data;
+  while (node !== null && typeof node === 'object' && !Array.isArray(node)) {
+    let found = false;
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v) && v.length > 0) return v;
+      if (v !== null && typeof v === 'object' && !Array.isArray(v)) { node = v; found = true; break; }
+    }
+    if (!found) break;
+  }
+  return Array.isArray(node) ? node : [data];
+}
+
+// --- CSV helpers ---
+function csvEscape(val) {
+  if (val === null || val === undefined) return '';
+  const s = String(val);
+  return (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r'))
+    ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function jsonToCsv(data) {
+  if (!Array.isArray(data)) data = findArray(data);
+  if (!Array.isArray(data) || data.length === 0)
+    throw new Error('JSON must contain a non-empty array.');
+  const flatRows = [], allKeys = new Set();
+  for (const row of data) {
+    const flat = flatten(row, '', '.');
+    flatRows.push(flat);
+    for (const k of Object.keys(flat)) allKeys.add(k);
+  }
+  const cols = [...allKeys].sort();
+  const lines = [cols.map(csvEscape).join(',')];
+  for (const row of flatRows) lines.push(cols.map(c => csvEscape(row[c])).join(','));
+  return lines.join('\r\n');
+}
+
+function downloadCsv(csv, filename) {
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: filename });
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+function csvNameFromUrl(url) {
+  try {
+    const u = new URL(url);
+    let name = u.pathname.split('/').filter(Boolean).pop() || '';
+    name = name.replace(/\.[^.]+$/, '');
+    return (name || u.hostname.replace(/\./g, '_')) + '.csv';
+  } catch { return 'converted.csv'; }
+}
+
+// --- UI helpers ---
+const msgEl = document.getElementById('msg');
+const showMsg = (t, type) => { msgEl.textContent = t; msgEl.className = 'msg ' + type; };
+const clearMsg = () => { msgEl.className = 'msg'; msgEl.textContent = ''; };
+function setLoading(btn, on) {
+  btn.disabled = on;
+  btn.innerHTML = on ? '<span class="spinner"></span>Converting…' : 'Convert & Download';
+}
+
+// --- Tab switching ---
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+    clearMsg();
+  });
+});
+
+// --- File drop zone ---
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const fileNameEl = document.getElementById('file-name');
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; fileNameEl.textContent = e.dataTransfer.files[0].name; }
+});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) fileNameEl.textContent = fileInput.files[0].name; });
+
+// --- URL convert ---
+document.getElementById('btn-url').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-url');
+  const url = document.getElementById('url').value.trim();
+  clearMsg();
+  if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+    showMsg('Please enter a valid URL starting with http:// or https://', 'error'); return;
+  }
+  setLoading(btn, true);
+  try {
+    const resp = await fetch('/proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => null);
+      throw new Error((err && err.error) || 'HTTP error ' + resp.status);
+    }
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch { throw new Error('The response is not valid JSON.'); }
+    const csv = jsonToCsv(data);
+    downloadCsv(csv, csvNameFromUrl(url));
+    showMsg('Done! CSV downloaded.', 'success');
+  } catch (e) {
+    showMsg(e.message, 'error');
+  } finally {
+    setLoading(btn, false);
+  }
+});
+
+// --- File convert ---
+document.getElementById('btn-file').addEventListener('click', () => {
+  const btn = document.getElementById('btn-file');
+  clearMsg();
+  if (!fileInput.files.length) { showMsg('Please select a .json file.', 'error'); return; }
+  setLoading(btn, true);
+  const file = fileInput.files[0];
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      const csv = jsonToCsv(data);
+      downloadCsv(csv, file.name.replace(/\.json$/i, '') + '.csv');
+      showMsg('Done! CSV downloaded.', 'success');
+    } catch (e) {
+      showMsg(e.message || 'Invalid JSON file.', 'error');
+    } finally { setLoading(btn, false); }
+  };
+  reader.onerror = () => { showMsg('Could not read the file.', 'error'); setLoading(btn, false); };
+  reader.readAsText(file);
+});
+
+// --- Paste size warning ---
+document.getElementById('json-text').addEventListener('input', () => {
+  const bytes = new Blob([document.getElementById('json-text').value]).size;
+  const mb = bytes / (1024 * 1024);
+  const warn = document.getElementById('paste-size-warn');
+  if (mb >= 50) {
+    warn.textContent = `⚠️ Very large JSON (${mb.toFixed(0)} MB) — this may freeze your browser. Use the Upload JSON File tab instead.`;
+    warn.className = 'msg error';
+  } else if (mb >= 10) {
+    warn.textContent = `⚠️ Large JSON detected (${mb.toFixed(1)} MB). Consider using the Upload JSON File tab for better performance.`;
+    warn.className = 'msg error';
+  } else {
+    warn.textContent = '';
+    warn.className = 'msg';
+  }
+});
+
+// --- Paste convert ---
+document.getElementById('btn-paste').addEventListener('click', () => {
+  const btn = document.getElementById('btn-paste');
+  const raw = document.getElementById('json-text').value.trim();
+  clearMsg();
+  if (!raw) { showMsg('Please paste some JSON text.', 'error'); return; }
+  setLoading(btn, true);
+  try {
+    const data = JSON.parse(raw);
+    const csv = jsonToCsv(data);
+    downloadCsv(csv, 'converted.csv');
+    showMsg('Done! CSV downloaded.', 'success');
+  } catch (e) {
+    showMsg(e.message || 'Invalid JSON.', 'error');
+  } finally {
+    setLoading(btn, false);
+  }
+});
+</script>
+</body>
+</html>
