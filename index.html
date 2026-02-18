@@ -286,7 +286,25 @@ dropZone.addEventListener('drop', e => {
 });
 fileInput.addEventListener('change', () => { if (fileInput.files.length) fileNameEl.textContent = fileInput.files[0].name; });
 
-// --- URL convert (streams large responses via chunked reading) ---
+// --- Stream-read a fetch response with progress ---
+async function streamRead(resp, label) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    showMsg(`${label}… ${(received / (1024 * 1024)).toFixed(1)} MB received`, 'success');
+  }
+  const fullText = chunks.map(c => decoder.decode(c, { stream: true })).join('') + decoder.decode();
+  chunks.length = 0;
+  return fullText;
+}
+
+// --- URL convert: tries direct fetch first, falls back to server proxy ---
 document.getElementById('btn-url').addEventListener('click', async () => {
   const btn = document.getElementById('btn-url');
   const url = document.getElementById('url').value.trim();
@@ -296,36 +314,36 @@ document.getElementById('btn-url').addEventListener('click', async () => {
   }
   setLoading(btn, true);
   try {
-    const resp = await fetch('/proxy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => null);
-      throw new Error((err && err.error) || 'HTTP error ' + resp.status);
+    let text;
+
+    // Try direct browser fetch first (avoids server memory limits entirely)
+    try {
+      showMsg('Fetching directly from URL…', 'success');
+      const direct = await fetch(url, { mode: 'cors' });
+      if (!direct.ok) throw new Error('HTTP ' + direct.status);
+      text = await streamRead(direct, 'Downloading (direct)');
+    } catch (directErr) {
+      // CORS blocked or network error — fall back to server proxy
+      showMsg('Direct fetch blocked (CORS). Using server proxy…', 'success');
+      const resp = await fetch('/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => null);
+        throw new Error((err && err.error) || 'HTTP error ' + resp.status);
+      }
+      text = await streamRead(resp, 'Downloading (via server)');
     }
-    showMsg('Downloading JSON from server… (large files may take a minute)', 'success');
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    const chunks = [];
-    let received = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-      const mb = (received / (1024 * 1024)).toFixed(1);
-      showMsg(`Downloading… ${mb} MB received`, 'success');
-    }
+
     showMsg('Parsing JSON…', 'success');
-    const fullText = chunks.map(c => decoder.decode(c, { stream: true })).join('') + decoder.decode();
-    chunks.length = 0; // free memory
     let data;
-    try { data = JSON.parse(fullText); } catch { throw new Error('The response is not valid JSON.'); }
+    try { data = JSON.parse(text); } catch { throw new Error('The response is not valid JSON.'); }
+    text = null;
     showMsg('Converting to CSV…', 'success');
     const csv = jsonToCsv(data);
-    data = null; // free memory
+    data = null;
     downloadCsv(csv, csvNameFromUrl(url));
     showMsg('Done! CSV downloaded.', 'success');
   } catch (e) {
