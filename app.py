@@ -1,12 +1,15 @@
 import json
 import csv
 import io
+import os
 import requests
 from flask import Flask, send_file, request, jsonify, Response, stream_with_context
 from urllib.parse import urlparse
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def flatten(obj, parent_key="", sep="."):
@@ -75,7 +78,7 @@ def build_csv_response(data, filename):
 
 @app.route("/")
 def index():
-    return send_file("index.html")
+    return send_file(os.path.join(BASE_DIR, "index.html"))
 
 
 @app.route("/from-json", methods=["POST"])
